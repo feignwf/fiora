@@ -1,43 +1,59 @@
+import * as OSS from 'ali-oss';
 import fetch from './fetch';
 
-const loadQiniu = (() => {
-    let qiniu: any = null;
-    return async function handleLoadQiniu() {
-        if (qiniu) {
-            return qiniu;
-        }
-
+let ossClient: OSS;
+let endpoint = '/';
+export async function initOSS() {
+    const [, token] = await fetch('getSTS');
+    if (token?.enable) {
         // @ts-ignore
-        qiniu = await import(/* webpackChunkName: "qiniu" */ 'qiniu-js');
-        return qiniu;
-    };
-})();
+        ossClient = new OSS({
+            region: token.region,
+            accessKeyId: token.AccessKeyId,
+            accessKeySecret: token.AccessKeySecret,
+            stsToken: token.SecurityToken,
+            bucket: token.bucket,
+            refreshSTSToken: async () => {
+                const [, refreshToken] = await fetch('getSTS');
+                if (refreshToken) {
+                    return {
+                        accessKeyId: refreshToken.AccessKeyId,
+                        accessKeySecret: refreshToken.AccessKeySecret,
+                        stsToken: refreshToken.SecurityToken,
+                    };
+                }
+                return null;
+            },
+        });
+        if (token.endpoint) {
+            endpoint = `//${token.endpoint}/`;
+        }
+    }
+}
 
-interface QiniuUploadInfo {
-    key: string;
+export function getOSSFileUrl(url = '', process = '') {
+    const [rawUrl = '', extraPrams = ''] = url.split('?');
+    if (ossClient && rawUrl.startsWith('oss:')) {
+        const filename = rawUrl.slice(4);
+        // expire 5min
+        return `${ossClient.signatureUrl(filename, { expires: 300, process })}${
+            extraPrams ? `&${extraPrams}` : ''
+        }`;
+    }
+    if (/\/\/cdn.suisuijiang.com/.test(rawUrl)) {
+        return `${rawUrl}?x-oss-process=${process}${extraPrams ? `&${extraPrams}` : ''}`;
+    }
+    return `${url}`;
 }
 
 /**
- * 上传文件到七牛
+ * 上传文件
  * @param blob 文件blob数据
- * @param qiniuKey 七牛文件key
  * @param fileName 文件名
- * @param qiniuNextEventCallback 七牛上传进度回调
  */
-export default async function uploadFile(
-    blob: Blob,
-    qiniuKey: string,
-    fileName: string,
-    qiniuNextEventCallback?: (info: QiniuUploadInfo) => void,
-): Promise<string> {
-    // 获取七牛上传token
-    const [getTokenErr, tokenRes] = await fetch('uploadToken');
-    if (getTokenErr) {
-        throw Error(getTokenErr);
-    }
-
-    // 服务端返回标识, 说明七牛不可用, 则上传文件到服务端
-    if (tokenRes.useUploadFile === true) {
+export default async function uploadFile(blob: Blob, fileName: string): Promise<string> {
+    // 阿里云 OSS 不可用, 上传文件到服务端
+    if (!ossClient) {
         const [uploadErr, result] = await fetch('uploadFile', {
             file: blob,
             fileName,
@@ -45,34 +61,13 @@ export default async function uploadFile(
         if (uploadErr) {
             throw Error(uploadErr);
         }
-        if (qiniuNextEventCallback) {
-            qiniuNextEventCallback({
-                // @ts-ignore
-                total: {
-                    percent: 100,
-                },
-            });
-        }
         return result.url;
     }
 
-    // 七牛可用, 上传到七牛
-    const qiniu = await loadQiniu();
-    return new Promise((resolve, reject) => {
-        const result = qiniu.upload(blob, qiniuKey, tokenRes.token, { useCdnDomain: true }, {});
-        result.subscribe({
-            next: (info:QiniuUploadInfo) => {
-                if (qiniuNextEventCallback) {
-                    qiniuNextEventCallback(info);
-                }
-            },
-            error: (qiniuErr: Error) => {
-                reject(qiniuErr);
-            },
-            complete: async (info: QiniuUploadInfo) => {
-                const imageUrl = `${tokenRes.urlPrefix + info.key}`;
-                resolve(imageUrl);
-            },
-        });
-    });
+    // 上传到阿里OSS
+    const result = await ossClient.put(fileName, blob);
+    if (result.res.status === 200) {
+        return endpoint + result.name;
+    }
+    return Promise.reject('上传文件失败');
 }

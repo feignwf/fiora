@@ -6,11 +6,15 @@ import User from '../server/models/user';
 import Message from '../server/models/message';
 import Group, { GroupDocument } from '../server/models/group';
 import Friend from '../server/models/friend';
+import History from '../server/models/history';
 
 export async function deleteUser(userId: string, confirm = true) {
     if (!userId) {
         console.log(
-            chalk.red('Wrong command, [userId] is missing.', chalk.green('Usage: yarn script deleteUser [userId]')),
+            chalk.red(
+                'Wrong command, [userId] is missing.',
+                chalk.green('Usage: yarn script deleteUser [userId]'),
+            ),
         );
         return;
     }
@@ -33,15 +37,23 @@ export async function deleteUser(userId: string, confirm = true) {
                 }
             }
 
+            const messages = await Message.find({ from: user._id });
+            const deleteHistoryResult = await History.deleteMany({
+                message: {
+                    $in: messages.map((message) => message.id),
+                },
+            });
+            console.log('Delete history result:', deleteHistoryResult);
+
             console.log(chalk.yellow('Delete messages created by this user'));
             const deleteMessageResult = await Message.deleteMany({
-                from: user,
+                from: user._id,
             });
             console.log('Delete result:', deleteMessageResult);
 
             console.log(chalk.yellow('Leave the group that the user has joined'));
             const groups = await Group.find({
-                members: user,
+                members: user._id,
             });
             // eslint-disable-next-line no-inner-declarations
             async function leaveGroup(group: GroupDocument) {
@@ -61,10 +73,10 @@ export async function deleteUser(userId: string, confirm = true) {
 
             console.log(chalk.yellow('Delete the friend relationship related to this user'));
             const deleteFriendResult1 = await Friend.deleteMany({
-                from: user,
+                from: user._id,
             });
             const deleteFriendResult2 = await Friend.deleteMany({
-                to: user,
+                to: user._id,
             });
             console.log('Delete result:', deleteFriendResult1, deleteFriendResult2);
 

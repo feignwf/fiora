@@ -4,12 +4,12 @@ import axios from 'axios';
 import assert, { AssertionError } from 'assert';
 import { promisify } from 'util';
 import RegexEscape from 'regex-escape';
+import OSS, { STS } from 'ali-oss';
 
 import User from '../models/user';
 import Group from '../models/group';
 
 import config from '../../config/server';
-import { KoaContext } from '../../types/koa';
 import Socket from '../models/socket';
 import { getAllSealIp, getAllSealUser, getSealIpKey, getSealUserKey, Redis } from '../redis';
 import logger from '../utils/logger';
@@ -19,16 +19,11 @@ let baiduToken = '';
 /** 最后一次获取token的时间 */
 let lastBaiduTokenTime = Date.now();
 
-interface SearchData {
-    /** 关键字 */
-    keywords: string;
-}
-
 /**
  * 搜索用户和群组
  * @param ctx Context
  */
-export async function search(ctx: KoaContext<SearchData>) {
+export async function search(ctx: Context<{ keywords: string }>) {
     const keywords = ctx.data.keywords?.trim() || '';
     if (keywords === '') {
         return {
@@ -62,7 +57,7 @@ export async function search(ctx: KoaContext<SearchData>) {
  * 搜索表情包, 爬其它站资源
  * @param ctx Context
  */
-export async function searchExpression(ctx: KoaContext<{ keywords: string; limit?: number }>) {
+export async function searchExpression(ctx: Context<{ keywords: string; limit?: number }>) {
     const { keywords, limit = Infinity } = ctx.data;
     if (keywords === '') {
         return [];
@@ -132,16 +127,11 @@ export async function getBaiduToken() {
     return { token: baiduToken };
 }
 
-interface SealUserData {
-    /** 用户名 */
-    username: string;
-}
-
 /**
  * 封禁用户, 需要管理员权限
  * @param ctx Context
  */
-export async function sealUser(ctx: KoaContext<SealUserData>) {
+export async function sealUser(ctx: Context<{ username: string }>) {
     const { username } = ctx.data;
     assert(username !== '', 'username不能为空');
 
@@ -171,7 +161,7 @@ export async function getSealList() {
 
     const result = {
         users: users.map((user) => user.username),
-        ips: Array.from(sealIpList.keys()),
+        ips: sealIpList,
     };
     return result;
 }
@@ -183,7 +173,7 @@ const IpInSealList = 'ip已在封禁名单';
 /**
  * 封禁 ip 地址, 需要管理员权限
  */
-export async function sealIp(ctx: KoaContext<{ ip: string }>) {
+export async function sealIp(ctx: Context<{ ip: string }>) {
     const { ip } = ctx.data;
     assert(ip !== '::1' && ip !== '127.0.0.1', CantSealLocalIp);
     assert(ip !== ctx.socket.ip, CantSealSelf);
@@ -200,7 +190,7 @@ export async function sealIp(ctx: KoaContext<{ ip: string }>) {
 /**
  * 封禁指定用户的所有在线 ip 地址, 需要管理员权限
  */
-export async function sealUserOnlineIp(ctx: KoaContext<{ userId: string }>) {
+export async function sealUserOnlineIp(ctx: Context<{ userId: string }>) {
     const { userId } = ctx.data;
 
     const sockets = await Socket.find({ user: userId });
@@ -237,29 +227,81 @@ export async function sealUserOnlineIp(ctx: KoaContext<{ userId: string }>) {
     };
 }
 
-interface UploadFileData {
-    /** 文件名 */
-    fileName: string;
-    /** 文件内容 */
-    file: any;
+type STSResult = {
+    enable: boolean;
+    AccessKeyId: string;
+    AccessKeySecret: string;
+    bucket: string;
+    region: string;
+    SecurityToken: string;
+    endpoint: string;
+};
+
+// eslint-disable-next-line consistent-return
+export async function getSTS(): Promise<STSResult> {
+    if (!config.aliyunOSS.enable) {
+        // @ts-ignore
+        return {
+            enable: false,
+        };
+    }
+
+    const sts = new STS({
+        accessKeyId: config.aliyunOSS.accessKeyId,
+        accessKeySecret: config.aliyunOSS.accessKeySecret,
+    });
+    try {
+        const result = await sts.assumeRole(
+            config.aliyunOSS.roleArn,
+            undefined,
+            undefined,
+            'fiora-uploader',
+        );
+        // @ts-ignore
+        return {
+            enable: true,
+            region: config.aliyunOSS.region,
+            bucket: config.aliyunOSS.bucket,
+            endpoint: config.aliyunOSS.endpoint,
+            ...result.credentials,
+        };
+    } catch (err) {
+        assert.fail(`获取 STS 失败 - ${err.message}`);
+    }
 }
 
-export async function uploadFile(ctx: KoaContext<UploadFileData>) {
-    assert(
-        ![
-            config.qiniuAccessKey,
-            config.qiniuSecretKey,
-            config.qiniuBucket,
-            config.qiniuUrlPrefix,
-        ].every(Boolean),
-        '已配置七牛, 请使用七牛文件上传',
-    );
-
+export async function uploadFile(
+    ctx: Context<{ fileName: string; file: any; isBase64?: boolean }>,
+) {
     try {
-        await promisify(fs.writeFile)(
-            path.resolve(__dirname, `../../public/${ctx.data.fileName}`),
-            ctx.data.file,
-        );
+        if (config.aliyunOSS.enable) {
+            const sts = await getSTS();
+            const client = new OSS({
+                accessKeyId: sts.AccessKeyId,
+                accessKeySecret: sts.AccessKeySecret,
+                bucket: sts.bucket,
+                region: sts.region,
+                stsToken: sts.SecurityToken,
+            });
+            const result = await client.put(
+                ctx.data.fileName,
+                ctx.data.isBase64 ? Buffer.from(ctx.data.file, 'base64') : ctx.data.file,
+            );
+            if (result.res.status === 200) {
+                return {
+                    url: `//${config.aliyunOSS.endpoint}/${result.name}`,
+                };
+            }
+            throw Error('上传阿里云OSS失败');
+        }
+
+        const [directory, fileName] = ctx.data.fileName.split('/');
+        const filePath = path.resolve('__dirname', '../public', directory);
+        const isExists = await promisify(fs.exists)(filePath);
+        if (!isExists) {
+            await promisify(fs.mkdir)(filePath);
+        }
+        await promisify(fs.writeFile)(path.resolve(filePath, fileName), ctx.data.file);
         return {
             url: `/${ctx.data.fileName}`,
         };

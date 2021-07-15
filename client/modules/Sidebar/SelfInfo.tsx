@@ -9,7 +9,7 @@ import Button from '../../components/Button';
 import Input from '../../components/Input';
 import { State } from '../../state/reducer';
 import readDiskFile from '../../../utils/readDiskFile';
-import uploadFile from '../../../utils/uploadFile';
+import uploadFile, { getOSSFileUrl } from '../../../utils/uploadFile';
 import config from '../../../config/client';
 import Message from '../../components/Message';
 import { changeAvatar, changePassword, changeUsername } from '../../service';
@@ -45,8 +45,7 @@ function SelfInfo(props: SelfInfoProps) {
         try {
             const avatarUrl = await uploadFile(
                 blob,
-                `Avatar/${userId}_${Date.now()}`,
-                `Avatar_${userId}_${Date.now()}.${ext}`,
+                `Avatar/${userId}_${Date.now()}.${ext}`,
             );
             const isSuccess = await changeAvatar(avatarUrl);
             if (isSuccess) {
@@ -69,7 +68,7 @@ function SelfInfo(props: SelfInfoProps) {
         }
         if (file.length > config.maxAvatarSize) {
             // eslint-disable-next-line consistent-return
-            return Message.error('设置头像失败, 请选择小于1MB的图片');
+            return Message.error('设置头像失败, 请选择小于1.5MB的图片');
         }
 
         // gif头像不需要裁剪
@@ -174,7 +173,7 @@ function SelfInfo(props: SelfInfoProps) {
                                 <img
                                     className={loading ? 'blur' : ''}
                                     alt="头像预览"
-                                    src={avatar}
+                                    src={getOSSFileUrl(avatar as string)}
                                     onClick={selectAvatar}
                                 />
                                 <ReactLoading

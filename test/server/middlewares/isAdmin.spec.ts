@@ -1,40 +1,40 @@
-import { YouAreNotAdministrator } from '../../../server/middlewares/isAdmin';
-import { KoaContext } from '../../../types/koa';
-import { runMiddleware } from '../../helpers/middleware';
+import { mocked } from 'ts-jest/utils';
+import isAdmin, { YOU_ARE_NOT_ADMINISTRATOR } from '../../../server/middlewares/isAdmin';
+import { Socket } from '../../../types/socket';
+import { getMiddlewareParams } from '../../helpers/middleware';
+import config from '../../../config/server';
+
+jest.mock('../../../config/server');
 
 describe('server/middlewares/isAdmin', () => {
-    beforeEach(() => {
-        jest.resetModules();
-    });
-
     it('should call service fail when user not administrator', async () => {
-        const isAdmin = require('../../../server/middlewares/isAdmin').default;
-        // @ts-ignore
-        const ctx = {
-            event: 'sealUser',
-            socket: {
-                id: 'id',
+        const socket = {
+            id: 'id',
+            data: {
                 user: 'user',
             },
-        } as KoaContext;
+        } as Socket;
+        const middleware = isAdmin(socket);
 
-        await runMiddleware(isAdmin(), ctx);
-        expect(ctx.res).toBe(YouAreNotAdministrator);
+        const { args, cb, next } = getMiddlewareParams('sealUser');
+
+        await middleware(args, next);
+        expect(cb).toBeCalledWith(YOU_ARE_NOT_ADMINISTRATOR);
     });
 
     it('should call service success when user is administrator', async () => {
-        process.env.Administrator = 'administrator';
-        const isAdmin = require('../../../server/middlewares/isAdmin').default;
-        // @ts-ignore
-        const ctx = {
-            event: 'sealUser',
-            socket: {
-                id: 'id',
+        mocked(config).administrator = ['administrator'];
+        const socket = {
+            id: 'id',
+            data: {
                 user: 'administrator',
             },
-        } as KoaContext;
+        } as Socket;
+        const middleware = isAdmin(socket);
 
-        const data = await runMiddleware(isAdmin(), ctx);
-        expect(ctx.res).toBe(data);
+        const { args, next } = getMiddlewareParams('sealUser');
+
+        await middleware(args, next);
+        expect(next).toBeCalled();
     });
 });

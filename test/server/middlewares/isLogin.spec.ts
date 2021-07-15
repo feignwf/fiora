@@ -1,44 +1,48 @@
-import isLogin, { NeedLogin } from '../../../server/middlewares/isLogin';
-import { KoaContext } from '../../../types/koa';
-import { runMiddleware } from '../../helpers/middleware';
+import isLogin, { PLEASE_LOGIN } from '../../../server/middlewares/isLogin';
+import { Socket } from '../../../types/socket';
+import { getMiddlewareParams } from '../../helpers/middleware';
 
 describe('server/middlewares/isLogin', () => {
     it('should call service fail when user not login', async () => {
-        // @ts-ignore
-        const ctx = {
-            event: 'sendMessage',
-            socket: {
-                id: 'id',
-            },
-        } as KoaContext;
+        const socket = {
+            id: 'id',
+            data: {},
+        } as Socket;
+        const middleware = isLogin(socket);
 
-        await runMiddleware(isLogin(), ctx);
-        expect(ctx.res).toBe(NeedLogin);
+        const { args, cb, next } = getMiddlewareParams('sendMessage');
+
+        await middleware(args, next);
+        expect(cb).toBeCalledWith(PLEASE_LOGIN);
     });
 
     it('should call service success when user is login', async () => {
-        // @ts-ignore
-        const ctx = {
-            event: 'sendMessage',
-            socket: {
-                id: 'id',
+        const socket = {
+            id: 'id',
+            data: {
                 user: 'user',
             },
-        } as KoaContext;
-        const data = await runMiddleware(isLogin(), ctx);
-        expect(ctx.res).toBe(data);
+        } as Socket;
+        const middleware = isLogin(socket);
+
+        const { args, next } = getMiddlewareParams('sendMessage');
+
+        await middleware(args, next);
+        expect(next).toBeCalled();
     });
 
     it('should call service success when it not need login ', async () => {
-        // @ts-ignore
-        const ctx = {
-            event: 'register',
-            socket: {
-                id: 'id',
+        const socket = {
+            id: 'id',
+            data: {
+                user: 'user',
             },
-        } as KoaContext;
+        } as Socket;
+        const middleware = isLogin(socket);
 
-        const data = await runMiddleware(isLogin(), ctx);
-        expect(ctx.res).toBe(data);
+        const { args, next } = getMiddlewareParams('register');
+
+        await middleware(args, next);
+        expect(next).toBeCalled();
     });
 });
